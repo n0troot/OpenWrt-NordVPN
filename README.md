@@ -313,18 +313,126 @@ uci commit wireless
 wifi down
 wifi up
 ```
-
 ---
-
-## Changing VPN Server
-
-To switch to a different NordVPN server:
-
+ 
+## Phase 8: Auto-Update & Watchdog Scripts
+ 
+These scripts automatically find the best available server and reconnect if the VPN drops.
+ 
+### nordvpn-update
+ 
+```bash
+cat > /usr/bin/nordvpn-update << 'EOF'
+#!/bin/sh
+ 
+ACCESS_TOKEN="PASTE_YOUR_ACCESS_TOKEN_HERE"
+ 
+log() {
+    echo "[nordvpn-update] $1"
+    logger -t nordvpn-update "$1"
+}
+ 
+log "Fetching best NordVPN server..."
+ 
+# URL-encoded brackets required — plain brackets return empty on OpenWrt curl
+SERVERS=$(curl -s "https://api.nordvpn.com/v1/servers?filters%5Bservers_technologies%5D%5Bidentifier%5D=wireguard_udp&filters%5Bdomain%5D=us9354.nordvpn.com&limit=10")
+ 
+if [ -z "$SERVERS" ]; then
+    log "ERROR: Could not fetch server list"
+    exit 1
+fi
+ 
+# Index [3] skips Poland/Belgium/Hungary entries and selects a US server
+SERVER_IP=$(echo "$SERVERS" | jsonfilter -e '@[3].station')
+SERVER_KEY=$(echo "$SERVERS" | jsonfilter -e '@[3].technologies[@.identifier="wireguard_udp"].metadata[@.name="public_key"].value')
+ 
+if [ -z "$SERVER_IP" ] || [ -z "$SERVER_KEY" ]; then
+    log "ERROR: Could not parse server details"
+    exit 1
+fi
+ 
+log "Selected server: $SERVER_IP"
+ 
+# curl -u handles base64 auth internally — no base64/openssl tool needed
+PRIVATE_KEY=$(curl -s -u "token:$ACCESS_TOKEN" \
+    "https://api.nordvpn.com/v1/users/services/credentials" | \
+    jsonfilter -e '@.nordlynx_private_key')
+ 
+if [ -z "$PRIVATE_KEY" ]; then
+    log "ERROR: Could not fetch private key — check access token"
+    exit 1
+fi
+ 
+log "Updating WireGuard config..."
+uci set network.wg0.private_key="$PRIVATE_KEY"
+uci set network.@wireguard_wg0[0].endpoint_host="$SERVER_IP"
+uci set network.@wireguard_wg0[0].public_key="$SERVER_KEY"
+uci commit network
+ifdown wg0; sleep 2; ifup wg0
+ 
+sleep 20
+ 
+HANDSHAKE=$(wg show wg0 latest-handshakes | awk 'NR==1{print $2}')
+NOW=$(date +%s)
+ 
+if [ -n "$HANDSHAKE" ] && [ "$HANDSHAKE" != "0" ] && [ "$((NOW - HANDSHAKE))" -lt 60 ]; then
+    log "SUCCESS: Handshake established with $SERVER_IP"
+else
+    log "WARNING: No handshake yet — run 'wg show' to check"
+fi
+EOF
+chmod +x /usr/bin/nordvpn-update
+```
+ 
+### nordvpn-watchdog
+ 
+```bash
+cat > /usr/bin/nordvpn-watchdog << 'EOF'
+#!/bin/sh
+ 
+HANDSHAKE=$(wg show wg0 latest-handshakes | awk 'NR==1{print $2}')
+NOW=$(date +%s)
+ 
+if [ -z "$HANDSHAKE" ] || [ "$HANDSHAKE" = "0" ]; then
+    logger -t nordvpn-watchdog "No handshake detected, running update..."
+    /usr/bin/nordvpn-update
+    exit 0
+fi
+ 
+AGE=$((NOW - HANDSHAKE))
+ 
+if [ "$AGE" -gt 120 ]; then
+    logger -t nordvpn-watchdog "Handshake too old (${AGE}s), running update..."
+    /usr/bin/nordvpn-update
+else
+    logger -t nordvpn-watchdog "VPN OK - last handshake ${AGE}s ago"
+    echo "[nordvpn-watchdog] VPN OK - last handshake ${AGE}s ago"
+fi
+EOF
+chmod +x /usr/bin/nordvpn-watchdog
+```
+ 
+### Add Cron Job (check every 5 minutes)
+```bash
+echo "*/5 * * * * /usr/bin/nordvpn-watchdog" >> /etc/crontabs/root
+/etc/init.d/cron restart
+```
+ 
+---
+ 
+## Quick Reference
+ 
+```bash
+nordvpn-update      # manually update/reconnect VPN to fresh server
+nordvpn-watchdog    # check VPN status
+wg show             # show WireGuard tunnel details
+```
+ 
+### Change VPN Server Manually
 ```bash
 uci set network.@wireguard_wg0[0].endpoint_host='NEW_SERVER_IP'
 uci set network.@wireguard_wg0[0].public_key='NEW_PUBLIC_KEY'
 uci commit network
-/etc/init.d/network restart
 ```
 
 ---
