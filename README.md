@@ -365,9 +365,3 @@ Switch to a different US server - some IPs are blocked by Netflix. Get another s
 
 - **mwlwifi driver** - The WRT3200ACM uses a proprietary Marvell WiFi chip. The OpenWrt driver has a performance ceiling (~83-180 Mbps WiFi). This is a known unfixable limitation due to the closed-source firmware blob.
 - **High latency to US** - Israel → Los Angeles adds ~280ms. Use a European server for lower latency if streaming/gaming performance matters more than a US IP.
-
----
-
-## License
-
-MIT - feel free to use, modify, and share.
